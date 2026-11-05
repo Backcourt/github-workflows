@@ -1,0 +1,123 @@
+# Release a plugin hosted on WordPress.org.
+#
+# - Shared build + GitHub release (build.yml).
+# - Checks readme.txt "Stable tag" matches the version (stable releases only).
+# - Commits the built plugin to WordPress.org SVN trunk and tags/<version>,
+#   plus .wordpress-org/ assets (stable releases only).
+#
+# Translations come from translate.wordpress.org, so there is no GlotPress step.
+#
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+
+name: Release (WordPress.org)
+
+on:
+  workflow_call:
+    inputs:
+      # Shared build inputs. See build.yml for descriptions.
+      php-version:
+        type: string
+        default: '8.3'
+      node-version:
+        type: string
+        default: ''
+      main-file:
+        type: string
+        default: ''
+      makepot:
+        type: boolean
+        default: true
+      prefixed:
+        type: boolean
+        default: false
+      forbid-vendor:
+        type: boolean
+        default: true
+      changelog:
+        type: string
+        default: 'file'
+      # WordPress.org inputs.
+      wporg-slug:
+        description: 'WordPress.org plugin slug. Empty uses package.json "name".'
+        type: string
+        default: ''
+      assets-dir:
+        description: 'Folder in the plugin repo with WordPress.org banners, icons and screenshots.'
+        type: string
+        default: '.wordpress-org'
+      dry-run:
+        description: 'Run the SVN deploy without committing.'
+        type: boolean
+        default: false
+    secrets:
+      SVN_USERNAME:
+        required: true
+      SVN_PASSWORD:
+        required: true
+
+jobs:
+  build:
+    uses: ./.github/workflows/build.yml
+    permissions:
+      contents: write
+    with:
+      php-version: ${{ inputs.php-version }}
+      node-version: ${{ inputs.node-version }}
+      main-file: ${{ inputs.main-file }}
+      makepot: ${{ inputs.makepot }}
+      prefixed: ${{ inputs.prefixed }}
+      forbid-vendor: ${{ inputs.forbid-vendor }}
+      changelog: ${{ inputs.changelog }}
+
+  wporg:
+    name: 'Deploy to WordPress.org.'
+    needs: build
+    if: ${{ needs.build.outputs.prerelease != 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      # Needed for the .wordpress-org assets folder.
+      - name: 'Checks out the repository.'
+        uses: actions/checkout@v7
+
+      - name: 'Download release files.'
+        uses: actions/download-artifact@v5
+        with:
+          name: ${{ needs.build.outputs.artifact }}
+          path: ${{ runner.temp }}/release
+
+      # Deploys the exact contents of the release zip, not the repo.
+      - name: 'Unzip the release and check the Stable tag.'
+        id: unpack
+        env:
+          RELEASE_NAME: ${{ needs.build.outputs.name }}
+          RELEASE_VERSION: ${{ needs.build.outputs.version }}
+          WPORG_SLUG: ${{ inputs.wporg-slug }}
+        run: |
+          unzip -q "$RUNNER_TEMP/release/$RELEASE_NAME-$RELEASE_VERSION.zip" -d .wporg-build
+          build_dir=".wporg-build/$RELEASE_NAME"
+          readme="$build_dir/readme.txt"
+          if [ ! -f "$readme" ]; then
+            echo "::error::readme.txt is missing from the release zip."
+            exit 1
+          fi
+          stable=$(grep -m1 -iE '^Stable tag:' "$readme" | sed -E 's/^[^:]*:[[:space:]]*//' | tr -d '\r' | xargs)
+          if [ "$stable" != "$RELEASE_VERSION" ]; then
+            echo "::error file=readme.txt::readme.txt Stable tag ($stable) does not match version $RELEASE_VERSION."
+            exit 1
+          fi
+          echo "build_dir=$build_dir" >> "$GITHUB_OUTPUT"
+          echo "slug=${WPORG_SLUG:-$RELEASE_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: 'Deploy to WordPress.org.'
+        uses: 10up/action-wordpress-plugin-deploy@stable
+        with:
+          dry-run: ${{ inputs.dry-run }}
+        env:
+          SVN_USERNAME: ${{ secrets.SVN_USERNAME }}
+          SVN_PASSWORD: ${{ secrets.SVN_PASSWORD }}
+          SLUG: ${{ steps.unpack.outputs.slug }}
+          VERSION: ${{ needs.build.outputs.version }}
+          BUILD_DIR: ${{ steps.unpack.outputs.build_dir }}
+          ASSETS_DIR: ${{ inputs.assets-dir }}

@@ -1,0 +1,364 @@
+# Shared build + GitHub release for Backcourt plugins.
+#
+# Called by release-premium.yml, release-github.yml and release-wporg.yml.
+# Plugins don't call this file directly.
+#
+# Job "build":
+# - Checks out the repository (full history, for the commit changelog).
+# - Reads name/version from package.json and checks the tag, package.json
+#   and plugin header versions all match.
+# - Detects pre-releases (-alpha, -beta, -rc).
+# - Sets up PHP with Composer and WP-CLI (with caching).
+# - Installs production Composer dependencies.
+# - Generates the POT file.
+# - Verifies prefixed packages.
+# - Sets up NodeJS and installs NPM dependencies.
+# - Builds the release zip (npm run release / npm run betarelease).
+# - Verifies the release zip.
+# - Builds release notes (changelog.txt or commit log).
+# - Uploads zip, notes and POT as a workflow artifact for later jobs.
+#
+# Job "github-release":
+# - Adds the zip to GitHub releases.
+#
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+
+name: Build
+
+on:
+  workflow_call:
+    inputs:
+      php-version:
+        description: 'PHP version for Composer and WP-CLI.'
+        type: string
+        default: '8.3'
+      node-version:
+        description: 'Node version. Empty uses .nvmrc, then 24.'
+        type: string
+        default: ''
+      main-file:
+        description: 'Plugin file with the Version header. Empty uses <package.json name>.php.'
+        type: string
+        default: ''
+      makepot:
+        description: 'Generate the POT file and require it in the zip.'
+        type: boolean
+        default: true
+      prefixed:
+        description: 'Require vendor-prefixed/autoload.php (Strauss) in the zip.'
+        type: boolean
+        default: false
+      forbid-vendor:
+        description: 'Fail if the zip contains a vendor/ folder.'
+        type: boolean
+        default: true
+      changelog:
+        description: 'Release notes source: "commits" (commit subjects since the last tag) or "file" (changelog.txt).'
+        type: string
+        default: 'commits'
+    outputs:
+      name:
+        description: 'Plugin slug (package.json name).'
+        value: ${{ jobs.build.outputs.name }}
+      version:
+        description: 'Release version.'
+        value: ${{ jobs.build.outputs.version }}
+      prerelease:
+        description: '"true" for -alpha, -beta and -rc versions.'
+        value: ${{ jobs.build.outputs.prerelease }}
+      textdomain:
+        description: 'Text domain (package.json textdomain, then name). The POT file is languages/<textdomain>.pot.'
+        value: ${{ jobs.build.outputs.textdomain }}
+      artifact:
+        description: 'Workflow artifact holding <name>-<version>.zip, release-notes.md and <textdomain>.pot.'
+        value: ${{ jobs.build.outputs.artifact }}
+
+jobs:
+  build:
+    name: 'Build distribution release.'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      # Release builds never need require-dev packages, even if npm scripts run composer.
+      COMPOSER_NO_DEV: 1
+    outputs:
+      name: ${{ steps.info.outputs.name }}
+      version: ${{ steps.info.outputs.version }}
+      prerelease: ${{ steps.info.outputs.prerelease }}
+      textdomain: ${{ steps.info.outputs.textdomain }}
+      artifact: ${{ steps.info.outputs.artifact }}
+    steps:
+      - name: 'Checks out the repository.'
+        uses: actions/checkout@v7
+        with:
+          # Full history and tags, so we can find the previous tag.
+          fetch-depth: 0
+
+      # Reports every mismatch before failing, so one run shows everything to fix.
+      - name: 'Read package.json info and check versions.'
+        id: info
+        env:
+          MAIN_FILE: ${{ inputs.main-file }}
+        run: |
+          fail=0
+          name=$(jq -r '.name // empty' package.json)
+          version=$(jq -r '.version // empty' package.json)
+          textdomain=$(jq -r '.textdomain // empty' package.json)
+          textdomain="${textdomain:-$name}"
+          if [ -z "$name" ] || [ -z "$version" ]; then
+            echo "::error::package.json needs both \"name\" and \"version\"."
+            exit 1
+          fi
+
+          if [ "$GITHUB_REF_TYPE" != "tag" ]; then
+            echo "::error::Releases must run from a tag push, not $GITHUB_REF_TYPE $GITHUB_REF_NAME."
+            fail=1
+          elif [ "$GITHUB_REF_NAME" != "$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match package.json version $version."
+            fail=1
+          fi
+
+          main="${MAIN_FILE:-$name.php}"
+          if [ ! -f "$main" ]; then
+            echo "::error::Main plugin file $main not found. Set the main-file input."
+            fail=1
+          else
+            header=$(grep -m1 -E '^[[:space:]/*#@]*Version:' "$main" | sed -E 's/.*Version:[[:space:]]*//' | tr -d '\r' | xargs)
+            if [ "$header" != "$version" ]; then
+              echo "::error file=$main::Plugin header Version ($header) does not match package.json version $version."
+              fail=1
+            fi
+          fi
+
+          case "$version" in
+            *-alpha*|*-beta*|*-rc*) prerelease=true ;;
+            *) prerelease=false ;;
+          esac
+
+          {
+            echo "name=$name"
+            echo "version=$version"
+            echo "prerelease=$prerelease"
+            echo "textdomain=$textdomain"
+            echo "artifact=release-$name-$version"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "RELEASE_NAME=$name"
+            echo "RELEASE_VERSION=$version"
+            echo "RELEASE_PRERELEASE=$prerelease"
+            echo "RELEASE_TEXTDOMAIN=$textdomain"
+          } >> "$GITHUB_ENV"
+
+          echo "Plugin: $name"
+          echo "Text domain: $textdomain"
+          echo "Version: $version"
+          echo "Pre-release: $prerelease"
+          exit $fail
+
+      - name: 'Sets up PHP with Composer and WP-CLI.'
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ inputs.php-version }}
+          tools: composer, wp-cli
+        env:
+          COMPOSER_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 'Get Composer Cache Directory.'
+        if: ${{ hashFiles('composer.json') != '' }}
+        id: composer-cache
+        run: |
+          echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+
+      - name: 'Sets up Composer Caching.'
+        if: ${{ hashFiles('composer.json') != '' }}
+        uses: actions/cache@v6
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: ${{ runner.os }}-php-composer-build-${{ hashFiles('**/composer.json', '**/composer.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-php-composer-build-
+
+      - name: 'Logs debug information.'
+        run: |
+          php --version
+          composer --version
+          wp --allow-root --version
+
+      - name: 'Install production Composer dependencies.'
+        if: ${{ hashFiles('composer.json') != '' }}
+        run: |
+          composer install --no-dev --no-interaction --prefer-dist --optimize-autoloader
+
+      # Uses the plugin's own `composer makepot` script if it has one,
+      # otherwise the WP-CLI i18n command installed by setup-php.
+      - name: 'Generate POT file.'
+        if: ${{ inputs.makepot }}
+        run: |
+          if [ -f composer.json ] && jq -e '.scripts.makepot' composer.json > /dev/null; then
+            composer makepot
+          else
+            mkdir -p languages
+            wp --allow-root i18n make-pot . "languages/$RELEASE_TEXTDOMAIN.pot" \
+              --domain="$RELEASE_TEXTDOMAIN" \
+              --exclude=node_modules,vendor,vendor-prefixed,deploy,tests
+          fi
+          if [ ! -f "languages/$RELEASE_TEXTDOMAIN.pot" ]; then
+            echo "::error::languages/$RELEASE_TEXTDOMAIN.pot was not generated."
+            exit 1
+          fi
+
+      - name: 'Verify prefixed packages.'
+        if: ${{ inputs.prefixed }}
+        run: |
+          if [ ! -f ./vendor-prefixed/autoload.php ]; then
+            echo "::error::vendor-prefixed/autoload.php missing. Strauss did not run."
+            exit 1
+          fi
+
+      - name: 'Get Node version.'
+        id: node
+        env:
+          NODE_VERSION: ${{ inputs.node-version }}
+        run: |
+          v="$NODE_VERSION"
+          if [ -z "$v" ] && [ -f .nvmrc ]; then
+            v=$(tr -d '[:space:]' < .nvmrc)
+          fi
+          echo "version=${v:-24}" >> "$GITHUB_OUTPUT"
+
+      - name: 'Setup NodeJS.'
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ steps.node.outputs.version }}
+          cache: ${{ hashFiles('package-lock.json') != '' && 'npm' || '' }}
+
+      - name: 'Install NPM dependencies.'
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: 'Logs debug information.'
+        run: |
+          node --version
+          npm --version
+
+      # Pre-releases use `npm run betarelease` when the plugin has it.
+      - name: 'Build release.'
+        run: |
+          if [ "$RELEASE_PRERELEASE" = "true" ] && jq -e '.scripts.betarelease' package.json > /dev/null; then
+            npm run betarelease
+          else
+            npm run release
+          fi
+
+      # The standard build output is ./deploy/<name>-<version>.zip.
+      # ./deploy/<name>.zip is still accepted (with a warning) until every
+      # plugin's build is moved to the shared one. Deploy jobs that need a
+      # different name (WooCommerce.com wants <name>.zip) rename it themselves.
+      - name: 'Verify the release zip.'
+        env:
+          MAKEPOT: ${{ inputs.makepot }}
+          PREFIXED: ${{ inputs.prefixed }}
+          FORBID_VENDOR: ${{ inputs.forbid-vendor }}
+        run: |
+          out="$RUNNER_TEMP/release"
+          mkdir -p "$out"
+          zip="./deploy/$RELEASE_NAME-$RELEASE_VERSION.zip"
+          if [ ! -f "$zip" ] && [ -f "./deploy/$RELEASE_NAME.zip" ]; then
+            zip="./deploy/$RELEASE_NAME.zip"
+            echo "::warning::Using legacy ./deploy/$RELEASE_NAME.zip. Builds should output ./deploy/$RELEASE_NAME-$RELEASE_VERSION.zip."
+          fi
+          if [ ! -f "$zip" ]; then
+            ls -lh ./deploy || true
+            echo "::error::Release zip not found at ./deploy/$RELEASE_NAME-$RELEASE_VERSION.zip or ./deploy/$RELEASE_NAME.zip"
+            exit 1
+          fi
+
+          dir="$RELEASE_NAME"
+          files="$(unzip -Z1 "$zip")"
+          required=()
+          [ "$MAKEPOT" = "true" ] && required+=("languages/$RELEASE_TEXTDOMAIN.pot")
+          [ "$PREFIXED" = "true" ] && required+=("vendor-prefixed/autoload.php")
+          for file in "${required[@]}"; do
+            if ! echo "$files" | grep -qxF "$dir/$file"; then
+              echo "::error::$file is missing from the release zip."
+              exit 1
+            fi
+          done
+
+          forbidden="strauss.phar|^$dir/node_modules/"
+          [ "$FORBID_VENDOR" = "true" ] && forbidden="$forbidden|^$dir/vendor/"
+          if bad=$(echo "$files" | grep -E "$forbidden"); then
+            echo "$bad" | head -n 20
+            echo "::error::Build tools or unprefixed vendor packages found in the release zip."
+            exit 1
+          fi
+
+          cp "$zip" "$out/$RELEASE_NAME-$RELEASE_VERSION.zip"
+          if [ -f "languages/$RELEASE_TEXTDOMAIN.pot" ]; then
+            cp "languages/$RELEASE_TEXTDOMAIN.pot" "$out/"
+          fi
+          ls -lh "$out"
+
+      - name: 'Build release notes.'
+        env:
+          CHANGELOG: ${{ inputs.changelog }}
+        run: |
+          notes="$RUNNER_TEMP/release/release-notes.md"
+          if [ "$CHANGELOG" = "file" ]; then
+            # Lines under "<date> - version <version>" up to the next version heading, trailing blank lines trimmed.
+            awk -v ver="$RELEASE_VERSION" '
+              { sub(/\r$/, "") }
+              /^[^ ]+ - version / { if (found) exit; if ($NF == ver) { found = 1; next } }
+              found { print }
+            ' changelog.txt | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}' > "$notes"
+          else
+            # Commit subjects since the previous tag, minus version bumps.
+            prev=$(git describe --tags --abbrev=0 "$GITHUB_REF_NAME^" 2>/dev/null || true)
+            range="${prev:+$prev..}$GITHUB_REF_NAME"
+            {
+              echo "## Changelog"
+              echo
+              git log "$range" --no-merges --pretty=format:'- %s' \
+                | grep -viE '^- version bump|^- version [0-9]|^- [0-9]+\.[0-9]+\.[0-9]+' || true
+            } > "$notes"
+          fi
+          if ! grep -q '[^[:space:]]' "$notes"; then
+            echo "::warning::No release notes found for $RELEASE_VERSION. The release body will be empty."
+          fi
+          cat "$notes"
+
+      - name: 'Upload release files.'
+        uses: actions/upload-artifact@v5
+        with:
+          name: ${{ steps.info.outputs.artifact }}
+          path: ${{ runner.temp }}/release/
+          if-no-files-found: error
+          retention-days: 30
+
+  github-release:
+    name: 'Add package to GitHub releases.'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: 'Download release files.'
+        uses: actions/download-artifact@v5
+        with:
+          name: ${{ needs.build.outputs.artifact }}
+          path: release
+
+      - name: 'Add package to GitHub releases.'
+        uses: softprops/action-gh-release@v3
+        with:
+          files: release/${{ needs.build.outputs.name }}-${{ needs.build.outputs.version }}.zip
+          body_path: release/release-notes.md
+          prerelease: ${{ needs.build.outputs.prerelease == 'true' }}
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

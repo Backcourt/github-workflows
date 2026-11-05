@@ -1,0 +1,184 @@
+# Release a premium plugin sold on WooCommerce.com.
+#
+# - Shared build + GitHub release (build.yml).
+# - Deploys <slug>.zip to WooCommerce.com (stable releases only).
+# - Imports the new POT file into GlotPress:
+#    - Stable: full sync, after the WooCommerce.com deploy succeeds.
+#    - Pre-release (-alpha, -beta, -rc): additive, so new strings can be
+#      translated early without obsoleting strings stable sites still use.
+#
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+
+name: Release (Premium)
+
+on:
+  workflow_call:
+    inputs:
+      # Shared build inputs. See build.yml for descriptions.
+      php-version:
+        type: string
+        default: '8.3'
+      node-version:
+        type: string
+        default: ''
+      main-file:
+        type: string
+        default: ''
+      makepot:
+        type: boolean
+        default: true
+      prefixed:
+        type: boolean
+        default: false
+      forbid-vendor:
+        type: boolean
+        default: true
+      changelog:
+        type: string
+        default: 'file'
+      # WooCommerce.com inputs.
+      woo-product-id:
+        description: 'WooCommerce.com product ID.'
+        type: string
+        required: true
+      # GlotPress inputs.
+      glotpress:
+        description: 'Import the POT file into GlotPress.'
+        type: boolean
+        default: true
+      glotpress-server:
+        description: 'GlotPress site running the gp-language-pack-server plugin.'
+        type: string
+        default: 'https://translate.backcourt.io'
+      glotpress-project:
+        description: 'GlotPress project slug. Empty uses package.json "glotpressProject", then "name".'
+        type: string
+        default: ''
+    secrets:
+      WCCOM_SUBMISSIONS_USERNAME:
+        required: true
+      WCCOM_SUBMISSIONS_PASSWORD:
+        required: true
+      GLOTPRESS_USER:
+        required: false
+      GLOTPRESS_APP_PASS:
+        required: false
+
+jobs:
+  build:
+    uses: ./.github/workflows/build.yml
+    permissions:
+      contents: write
+    with:
+      php-version: ${{ inputs.php-version }}
+      node-version: ${{ inputs.node-version }}
+      main-file: ${{ inputs.main-file }}
+      makepot: ${{ inputs.makepot }}
+      prefixed: ${{ inputs.prefixed }}
+      forbid-vendor: ${{ inputs.forbid-vendor }}
+      changelog: ${{ inputs.changelog }}
+
+  woocommerce:
+    name: 'Deploy to WooCommerce.com.'
+    needs: build
+    if: ${{ needs.build.outputs.prerelease != 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: 'Download release files.'
+        uses: actions/download-artifact@v5
+        with:
+          name: ${{ needs.build.outputs.artifact }}
+          path: release
+
+      # WooCommerce.com expects the zip named after the slug, without the version.
+      - name: 'Deploy to WooCommerce.com.'
+        env:
+          RELEASE_NAME: ${{ needs.build.outputs.name }}
+          RELEASE_VERSION: ${{ needs.build.outputs.version }}
+          PRODUCT_ID: ${{ inputs.woo-product-id }}
+          WCCOM_USERNAME: ${{ secrets.WCCOM_SUBMISSIONS_USERNAME }}
+          WCCOM_PASSWORD: ${{ secrets.WCCOM_SUBMISSIONS_PASSWORD }}
+        run: |
+          cp "release/$RELEASE_NAME-$RELEASE_VERSION.zip" "release/$RELEASE_NAME.zip"
+          curl --fail-with-body -sS -X POST https://woocommerce.com/wp-json/wc/submission/runner/v1/product/deploy \
+            -F "file=@release/$RELEASE_NAME.zip" \
+            -F "product_id=$PRODUCT_ID" \
+            -F "username=$WCCOM_USERNAME" \
+            -F "password=$WCCOM_PASSWORD" \
+            -F "version=$RELEASE_VERSION"
+
+
+  # Sends the POT file to the GlotPress import endpoint
+  # (<glotpress-server>/wp-json/gp-language-pack-server/v1/projects/<project>/import).
+  #
+  # Stable releases run after the WooCommerce.com deploy succeeds and do a full sync.
+  # Pre-releases skip WooCommerce.com and import with additive=1, so new strings
+  # become translatable without obsoleting anything stable sites still rely on.
+  #
+  # A translation sync failure shouldn't block shipping the release.
+  glotpress:
+    name: 'Upload POT to GlotPress.'
+    needs: [build, woocommerce]
+    if: ${{ !cancelled() && inputs.glotpress && inputs.makepot && needs.build.result == 'success' && needs.woocommerce.result != 'failure' }}
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - name: 'Checks out package.json.'
+        uses: actions/checkout@v7
+        with:
+          sparse-checkout: package.json
+          sparse-checkout-cone-mode: false
+
+      - name: 'Download release files.'
+        uses: actions/download-artifact@v5
+        with:
+          name: ${{ needs.build.outputs.artifact }}
+          path: release
+
+      # Credentials go to curl on stdin, not in argv or the URL. curl doesn't
+      # follow redirects here, so they can't be forwarded elsewhere.
+      - name: 'Upload POT to GlotPress.'
+        env:
+          GP_USER: ${{ secrets.GLOTPRESS_USER }}
+          GP_PASS: ${{ secrets.GLOTPRESS_APP_PASS }}
+          GP_SERVER: ${{ inputs.glotpress-server }}
+          GP_PROJECT: ${{ inputs.glotpress-project }}
+          RELEASE_NAME: ${{ needs.build.outputs.name }}
+          RELEASE_PRERELEASE: ${{ needs.build.outputs.prerelease }}
+          RELEASE_TEXTDOMAIN: ${{ needs.build.outputs.textdomain }}
+        run: |
+          project="${GP_PROJECT:-$(jq -r '.glotpressProject // empty' package.json)}"
+          project="${project:-$RELEASE_NAME}"
+          pot="release/$RELEASE_TEXTDOMAIN.pot"
+
+          if [ -z "$GP_USER" ] || [ -z "$GP_PASS" ]; then
+            echo "::error::GLOTPRESS_USER and GLOTPRESS_APP_PASS secrets are required."
+            exit 1
+          fi
+          if [ ! -f "$pot" ]; then
+            echo "::error::POT file not found: $pot"
+            exit 1
+          fi
+
+          url="${GP_SERVER%/}/wp-json/gp-language-pack-server/v1/projects/$(jq -rn --arg p "$project" '$p|@uri')/import"
+          form=(-F "file=@$pot" -F "format=po")
+          mode="full sync"
+          if [ "$RELEASE_PRERELEASE" = "true" ]; then
+            form+=(-F "additive=1")
+            mode="additive / pre-release"
+          fi
+
+          echo "Uploading $pot to $GP_SERVER (project: $project, mode: $mode)…"
+          status=$(printf 'user = "%s:%s"\n' "$GP_USER" "$GP_PASS" \
+            | curl -sS -K - -X POST "$url" "${form[@]}" -o response.json -w '%{http_code}')
+
+          if [ "${status:0:1}" != "2" ]; then
+            message=$(jq -r '.message // empty' response.json 2>/dev/null)
+            echo "::error::GlotPress import failed (HTTP $status): ${message:-$(head -c 500 response.json)}"
+            exit 1
+          fi
+          jq -r '"Added \(.originals_added), existing \(.originals_existing), fuzzied \(.originals_fuzzied), obsoleted \(.originals_obsoleted), errors \(.originals_error)."' response.json

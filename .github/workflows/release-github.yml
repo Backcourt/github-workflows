@@ -1,0 +1,96 @@
+# Release a public plugin served from GitHub through Git Updater.
+#
+# - Shared build + GitHub release (build.yml).
+# - Clears the Git Updater cache on backcourt.io (stable releases only).
+#
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+
+name: Release (GitHub)
+
+on:
+  workflow_call:
+    inputs:
+      # Shared build inputs. See build.yml for descriptions.
+      php-version:
+        type: string
+        default: '8.3'
+      node-version:
+        type: string
+        default: ''
+      main-file:
+        type: string
+        default: ''
+      makepot:
+        type: boolean
+        default: true
+      prefixed:
+        type: boolean
+        default: false
+      forbid-vendor:
+        type: boolean
+        default: true
+      changelog:
+        type: string
+        default: 'commits'
+      # Git Updater inputs.
+      git-updater-slug:
+        description: 'Git Updater repo slug. Empty uses package.json "git-updater-slug", then "name".'
+        type: string
+        default: ''
+      git-updater-url:
+        description: 'Git Updater flush-repo-cache endpoint.'
+        type: string
+        default: 'https://www.backcourt.io/wp-json/git-updater/v1/flush-repo-cache/'
+    secrets:
+      BACKCOURT_GITUPDATER_KEY:
+        required: true
+
+jobs:
+  build:
+    uses: ./.github/workflows/build.yml
+    permissions:
+      contents: write
+    with:
+      php-version: ${{ inputs.php-version }}
+      node-version: ${{ inputs.node-version }}
+      main-file: ${{ inputs.main-file }}
+      makepot: ${{ inputs.makepot }}
+      prefixed: ${{ inputs.prefixed }}
+      forbid-vendor: ${{ inputs.forbid-vendor }}
+      changelog: ${{ inputs.changelog }}
+
+  # Tell Git Updater to drop its cached repo data so the new release is served
+  # on the next update check. The endpoint returns 200 even on a bad key, so
+  # check the body for success.
+  git-updater:
+    name: 'Clear Git Updater cache.'
+    needs: build
+    if: ${{ needs.build.outputs.prerelease != 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: 'Checks out the repository.'
+        uses: actions/checkout@v7
+        with:
+          sparse-checkout: package.json
+          sparse-checkout-cone-mode: false
+
+      - name: 'Clear Git Updater cache.'
+        env:
+          GU_KEY: ${{ secrets.BACKCOURT_GITUPDATER_KEY }}
+          GU_URL: ${{ inputs.git-updater-url }}
+          GU_SLUG: ${{ inputs.git-updater-slug }}
+          RELEASE_NAME: ${{ needs.build.outputs.name }}
+        run: |
+          slug="${GU_SLUG:-$(jq -r '."git-updater-slug" // empty' package.json)}"
+          slug="${slug:-$RELEASE_NAME}"
+          echo "Clearing Git Updater cache for $slug…"
+          response=$(curl -fsS -X POST "$GU_URL" \
+            --data-urlencode "slug=$slug" \
+            --data-urlencode "key=$GU_KEY")
+          echo "$response"
+          if ! echo "$response" | grep -q '"success":true'; then
+            echo "::error::Git Updater cache flush failed."
+            exit 1
+          fi
