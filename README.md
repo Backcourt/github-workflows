@@ -103,7 +103,6 @@ github-workflows/
 │   ├── release-premium.yml   # build → WooCommerce.com → GlotPress
 │   ├── release-github.yml    # build → Git Updater flush
 │   └── release-wporg.yml     # build → WordPress.org SVN
-├── workflows/                # original per-plugin workflows, kept for reference
 └── README.md
 ```
 
