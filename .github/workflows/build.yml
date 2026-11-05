@@ -1,6 +1,6 @@
 # Shared build + GitHub release for Backcourt plugins.
 #
-# Called by release-premium.yml, release-github.yml and release-wporg.yml.
+# Called by release-woocommerce.yml, release-github.yml and release-wporg.yml.
 # Plugins don't call this file directly.
 #
 # Job "build":

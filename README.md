@@ -8,7 +8,7 @@ There are three release types, one for each place a plugin can be hosted:
 
 | Workflow | Use for | Where the plugin goes |
 | --- | --- | --- |
-| `release-premium.yml` | Premium plugins sold on WooCommerce.com | GitHub release → WooCommerce.com → GlotPress (translate.backcourt.io) |
+| `release-woocommerce.yml` | Premium plugins sold on WooCommerce.com | GitHub release → WooCommerce.com → GlotPress (translate.backcourt.io) |
 | `release-github.yml` | Free plugins served from GitHub through Git Updater | GitHub release → Git Updater cache flush on backcourt.io |
 | `release-wporg.yml` | Free plugins on WordPress.org | GitHub release → WordPress.org SVN |
 
@@ -50,13 +50,13 @@ Every release runs the same shared stage (`build.yml`), then one deploy job that
         │
         ▼
  DEPLOY jobs, one set per type:
-   premium : WooCommerce.com deploy (as <slug>.zip)  →  GlotPress full sync   (stable)
-             GlotPress additive import                                      (pre-release)
-   github  : Git Updater cache flush                                        (stable)
-   wporg   : readme.txt Stable tag check  →  WordPress.org SVN deploy       (stable)
+   woocommerce : WooCommerce.com deploy (as <slug>.zip)  →  GlotPress full sync   (stable)
+                 GlotPress additive import                                      (pre-release)
+   github      : Git Updater cache flush                                        (stable)
+   wporg       : readme.txt Stable tag check  →  WordPress.org SVN deploy       (stable)
 ```
 
-Pre-releases (`1.4.0-beta.1`, `2.0.0-rc.1`, and so on) still build and still get a GitHub release marked as a pre-release. They are **never** sent to WooCommerce.com, WordPress.org or Git Updater. The one exception is GlotPress (premium only): see [Translations and beta releases](#translations-and-beta-releases).
+Pre-releases (`1.4.0-beta.1`, `2.0.0-rc.1`, and so on) still build and still get a GitHub release marked as a pre-release. They are **never** sent to WooCommerce.com, WordPress.org or Git Updater. The one exception is GlotPress (woocommerce only): see [Translations and beta releases](#translations-and-beta-releases).
 
 The deploy jobs never rebuild. They download the exact zip the build job checked, so what lands on WooCommerce.com or WordPress.org is byte-for-byte what is attached to the GitHub release.
 
@@ -77,7 +77,7 @@ The deploy jobs never rebuild. They download the exact zip the build job checked
 
 | Type | Deploy jobs | Secrets |
 | --- | --- | --- |
-| **premium** | 1. Copies the zip to `<slug>.zip` (WooCommerce.com wants no version in the name) and POSTs it to the WooCommerce.com submission runner.<br>2. Uploads `<textdomain>.pot` to `https://translate.backcourt.io/wp-json/gp-language-pack-server/v1/projects/<project>/import`. Stable releases do a full sync after the WooCommerce.com deploy succeeds. Pre-releases do an additive import. A GlotPress failure shows as a warning but doesn't fail the release. | `WCCOM_SUBMISSIONS_USERNAME`, `WCCOM_SUBMISSIONS_PASSWORD`, `GLOTPRESS_USER`, `GLOTPRESS_APP_PASS` |
+| **woocommerce** | 1. Copies the zip to `<slug>.zip` (WooCommerce.com wants no version in the name) and POSTs it to the WooCommerce.com submission runner.<br>2. Uploads `<textdomain>.pot` to `https://translate.backcourt.io/wp-json/gp-language-pack-server/v1/projects/<project>/import`. Stable releases do a full sync after the WooCommerce.com deploy succeeds. Pre-releases do an additive import. A GlotPress failure shows as a warning but doesn't fail the release. | `WCCOM_SUBMISSIONS_USERNAME`, `WCCOM_SUBMISSIONS_PASSWORD`, `GLOTPRESS_USER`, `GLOTPRESS_APP_PASS` |
 | **github** | Tells Git Updater on backcourt.io to flush its cached repo data, so sites see the update on their next check. The endpoint returns HTTP 200 even with a bad key, so the job checks the response for `"success":true`. | `BACKCOURT_GITUPDATER_KEY` |
 | **wporg** | Unzips the release, checks `readme.txt` `Stable tag` matches the version, then commits it to SVN `trunk` and `tags/<version>`, plus the `.wordpress-org/` assets folder (via `10up/action-wordpress-plugin-deploy`). Translations come from translate.wordpress.org, so there's no GlotPress step. | `SVN_USERNAME`, `SVN_PASSWORD` |
 
@@ -100,7 +100,7 @@ The upload is the same request the old `grunt upload-pot` task made. The credent
 github-workflows/
 ├── .github/workflows/
 │   ├── build.yml             # shared build + GitHub release (called by the three below)
-│   ├── release-premium.yml   # build → WooCommerce.com → GlotPress
+│   ├── release-woocommerce.yml   # build → WooCommerce.com → GlotPress
 │   ├── release-github.yml    # build → Git Updater flush
 │   └── release-wporg.yml     # build → WordPress.org SVN
 └── README.md
@@ -119,7 +119,7 @@ GitHub only lets other repos call reusable workflows from a repo's `.github/work
   - Builds that still write `./deploy/<slug>.zip` are accepted with a warning, until every plugin uses the shared Gruntfile tasks.
 - A main plugin file **`<slug>.php`** with a `Version:` header. If the file has a different name, set the `main-file` input.
 - Translations: either a `composer makepot` script that writes `languages/<textdomain>.pot`, or nothing (the workflow runs `wp i18n make-pot` for you). Set `"textdomain"` in `package.json` if it differs from `name`. Set `makepot: false` to skip translations.
-- For premium: the GlotPress project slug, from the `glotpress-project` input, then `"glotpressProject"` in `package.json`, then `name`.
+- For woocommerce: the GlotPress project slug, from the `glotpress-project` input, then `"glotpressProject"` in `package.json`, then `name`.
 - If dependencies are prefixed with Strauss, set `prefixed: true` so the zip is checked for `vendor-prefixed/autoload.php`.
 - If the zip legitimately ships a `vendor/` folder, set `forbid-vendor: false`.
 - For `changelog: file`: a `changelog.txt` with headings like `2026-11-05 - version 1.4.0`.
@@ -129,7 +129,7 @@ GitHub only lets other repos call reusable workflows from a repo's `.github/work
 
 Add these under **Settings → Secrets and variables → Actions**. It's easier to set them once as **organization secrets** on the Backcourt org and share them with the repos that need them.
 
-| Secret | premium | github | wporg |
+| Secret | woocommerce | github | wporg |
 | --- | :-: | :-: | :-: |
 | `WCCOM_SUBMISSIONS_USERNAME` | ✓ | | |
 | `WCCOM_SUBMISSIONS_PASSWORD` | ✓ | | |
@@ -145,7 +145,7 @@ Add these under **Settings → Secrets and variables → Actions**. It's easier 
 
 Pick the one that matches where the plugin is hosted. `secrets: inherit` passes the plugin repo's secrets through, so you don't have to list them. `permissions: contents: write` lets the workflow create the GitHub release.
 
-#### Premium (WooCommerce.com)
+#### WooCommerce.com (premium plugins)
 
 ```yaml
 name: Release
@@ -160,7 +160,7 @@ permissions:
 
 jobs:
   release:
-    uses: Backcourt/github-workflows/.github/workflows/release-premium.yml@v1
+    uses: Backcourt/github-workflows/.github/workflows/release-woocommerce.yml@v1
     with:
       woo-product-id: '853021'
       prefixed: true
@@ -242,16 +242,16 @@ git tag -d 1.4.0 && git push origin :refs/tags/1.4.0
 | `makepot` | `true` | Generate the `.pot` file and require it in the zip. |
 | `prefixed` | `false` | Require `vendor-prefixed/autoload.php` (Strauss) in the zip. |
 | `forbid-vendor` | `true` | Fail if the zip contains `vendor/`. |
-| `changelog` | `commits` (github)<br>`file` (premium, wporg) | Release notes source: `file` = `changelog.txt`, `commits` = commit subjects since the previous tag. |
+| `changelog` | `commits` (github)<br>`file` (woocommerce, wporg) | Release notes source: `file` = `changelog.txt`, `commits` = commit subjects since the previous tag. |
 
 ### Per type
 
 | Workflow | Input | Default | What it does |
 | --- | --- | --- | --- |
-| premium | `woo-product-id` | *required* | WooCommerce.com product ID. |
-| premium | `glotpress` | `true` | Upload the `.pot` to GlotPress. |
-| premium | `glotpress-server` | `https://translate.backcourt.io` | GlotPress site running gp-language-pack-server. |
-| premium | `glotpress-project` | `package.json` `glotpressProject`, then `<slug>` | GlotPress project slug. |
+| woocommerce | `woo-product-id` | *required* | WooCommerce.com product ID. |
+| woocommerce | `glotpress` | `true` | Upload the `.pot` to GlotPress. |
+| woocommerce | `glotpress-server` | `https://translate.backcourt.io` | GlotPress site running gp-language-pack-server. |
+| woocommerce | `glotpress-project` | `package.json` `glotpressProject`, then `<slug>` | GlotPress project slug. |
 | github | `git-updater-slug` | `package.json` `git-updater-slug`, then `<slug>` | Repo slug sent to Git Updater. |
 | github | `git-updater-url` | backcourt.io flush endpoint | Git Updater `flush-repo-cache` URL. |
 | wporg | `wporg-slug` | `<slug>` | WordPress.org plugin slug. |
