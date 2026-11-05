@@ -165,7 +165,7 @@ jobs:
           fi
 
           url="${GP_SERVER%/}/wp-json/gp-language-pack-server/v1/projects/$(jq -rn --arg p "$project" '$p|@uri')/import"
-          form=(-F "file=@$pot" -F "format=po")
+          form=(-F "file=@$pot")
           mode="full sync"
           if [ "$RELEASE_PRERELEASE" = "true" ]; then
             form+=(-F "additive=1")
