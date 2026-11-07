@@ -49,7 +49,7 @@ on:
         type: boolean
         default: false
       forbid-vendor:
-        description: 'Fail if the zip contains a vendor/ folder.'
+        description: 'Fail if the zip contains vendor packages. Composer''s autoloader (vendor/autoload.php, vendor/composer/*) is allowed.'
         type: boolean
         default: true
       changelog:
@@ -290,9 +290,16 @@ jobs:
             fi
           done
 
+          # vendor/ may only hold Composer's own autoloader (e.g. for a plugin's src/ PSR-4
+          # autoload). Any package folder under vendor/, including vendor/composer/<package>/,
+          # is unprefixed and fails.
           forbidden="strauss.phar|^$dir/node_modules/"
-          [ "$FORBID_VENDOR" = "true" ] && forbidden="$forbidden|^$dir/vendor/"
-          if bad=$(echo "$files" | grep -E "$forbidden"); then
+          bad=$(echo "$files" | grep -E "$forbidden" || true)
+          if [ "$FORBID_VENDOR" = "true" ]; then
+            bad=$(printf '%s\n%s' "$bad" "$(echo "$files" | grep -E "^$dir/vendor/" | grep -vE "^$dir/vendor/(autoload\.php|composer/([^/]+)?)?$" || true)")
+          fi
+          bad=$(echo "$bad" | sed '/^$/d')
+          if [ -n "$bad" ]; then
             echo "$bad" | head -n 20
             echo "::error::Build tools or unprefixed vendor packages found in the release zip."
             exit 1

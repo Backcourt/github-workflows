@@ -69,7 +69,7 @@ The deploy jobs never rebuild. They download the exact zip the build job checked
 | Pre-release detection | Any version containing `-alpha`, `-beta` or `-rc`. |
 | Translate (`.pot`) | Writes `languages/<textdomain>.pot`, where the text domain is `package.json` `textdomain`, then `name`. Runs the plugin's `composer makepot` script if it has one, otherwise `wp i18n make-pot`. Turn off with `makepot: false`. |
 | Build | Runs the plugin's own `npm run release`. Pre-releases run `npm run betarelease` if that script exists. |
-| Zip verification | Zip exists; `languages/<textdomain>.pot` is in it (if `makepot`); `vendor-prefixed/autoload.php` is in it (if `prefixed`); no `node_modules/`, `strauss.phar` or (if `forbid-vendor`) `vendor/`. |
+| Zip verification | Zip exists; `languages/<textdomain>.pot` is in it (if `makepot`); `vendor-prefixed/autoload.php` is in it (if `prefixed`); no `node_modules/`, `strauss.phar` or (if `forbid-vendor`) packages under `vendor/` (Composer's autoloader files are allowed). |
 | Release notes | `changelog: file` reads the `changelog.txt` entry for this version. `changelog: commits` lists commit subjects since the previous tag, skipping version-bump commits. |
 | GitHub release | Attaches `<slug>-<version>.zip` with the release notes as the body. |
 
@@ -121,7 +121,7 @@ GitHub only lets other repos call reusable workflows from a repo's `.github/work
 - Translations: either a `composer makepot` script that writes `languages/<textdomain>.pot`, or nothing (the workflow runs `wp i18n make-pot` for you). Set `"textdomain"` in `package.json` if it differs from `name`. Set `makepot: false` to skip translations.
 - For woocommerce: the GlotPress project slug, from the `glotpress-project` input, then `"glotpressProject"` in `package.json`, then `name`.
 - If dependencies are prefixed with Strauss, set `prefixed: true` so the zip is checked for `vendor-prefixed/autoload.php`.
-- If the zip legitimately ships a `vendor/` folder, set `forbid-vendor: false`.
+- Composer's autoloader (`vendor/autoload.php`, `vendor/composer/*.php`, `installed.json`) passes the check, so a plugin can autoload its own `src/`. If the zip legitimately ships unprefixed packages in `vendor/`, set `forbid-vendor: false`.
 - For `changelog: file`: a `changelog.txt` with headings like `2026-11-05 - version 1.4.0`.
 - For wporg: `readme.txt` in the zip with `Stable tag:` set to the new version, and banners/icons/screenshots in `.wordpress-org/`.
 
@@ -241,7 +241,7 @@ git tag -d 1.4.0 && git push origin :refs/tags/1.4.0
 | `main-file` | `<slug>.php` | Plugin file whose `Version:` header is checked. |
 | `makepot` | `true` | Generate the `.pot` file and require it in the zip. |
 | `prefixed` | `false` | Require `vendor-prefixed/autoload.php` (Strauss) in the zip. |
-| `forbid-vendor` | `true` | Fail if the zip contains `vendor/`. |
+| `forbid-vendor` | `true` | Fail if the zip contains packages under `vendor/`. `vendor/autoload.php` and the files directly in `vendor/composer/` are allowed. |
 | `changelog` | `commits` (github)<br>`file` (woocommerce, wporg) | Release notes source: `file` = `changelog.txt`, `commits` = commit subjects since the previous tag. |
 
 ### Per type
