@@ -255,10 +255,9 @@ jobs:
             npm run release
           fi
 
-      # The standard build output is ./deploy/<name>-<version>.zip.
-      # ./deploy/<name>.zip is still accepted (with a warning) until every
-      # plugin's build is moved to the shared one. Deploy jobs that need a
-      # different name (WooCommerce.com wants <name>.zip) rename it themselves.
+      # Accepts ./deploy/<name>-<version>.zip or ./deploy/<name>.zip (WooCommerce.com
+      # plugins build without the version, because that's the name WooCommerce.com
+      # wants). Either way it's copied to <name>-<version>.zip for the GitHub release.
       - name: 'Verify the release zip.'
         env:
           MAKEPOT: ${{ inputs.makepot }}
@@ -270,7 +269,7 @@ jobs:
           zip="./deploy/$RELEASE_NAME-$RELEASE_VERSION.zip"
           if [ ! -f "$zip" ] && [ -f "./deploy/$RELEASE_NAME.zip" ]; then
             zip="./deploy/$RELEASE_NAME.zip"
-            echo "::warning::Using legacy ./deploy/$RELEASE_NAME.zip. Builds should output ./deploy/$RELEASE_NAME-$RELEASE_VERSION.zip."
+            echo "Found $zip. Adding the version for the GitHub release."
           fi
           if [ ! -f "$zip" ]; then
             ls -lh ./deploy || true

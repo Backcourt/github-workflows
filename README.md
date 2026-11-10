@@ -116,7 +116,7 @@ GitHub only lets other repos call reusable workflows from a repo's `.github/work
 
 - **`package.json`** with `name` (the plugin slug) and `version`.
 - **`npm run release`** writes the zip to **`./deploy/<slug>-<version>.zip`**, with a single top-level `<slug>/` folder inside. An optional **`npm run betarelease`** does the same for pre-releases.
-  - Builds that still write `./deploy/<slug>.zip` are accepted with a warning, until every plugin uses the shared Gruntfile tasks.
+  - WooCommerce.com plugins can write `./deploy/<slug>.zip` instead, since that's the name WooCommerce.com wants. The workflow adds the version for the GitHub release.
 - A main plugin file **`<slug>.php`** with a `Version:` header. If the file has a different name, set the `main-file` input.
 - Translations: either a `composer makepot` script that writes `languages/<textdomain>.pot`, or nothing (the workflow runs `wp i18n make-pot` for you). Set `"textdomain"` in `package.json` if it differs from `name`. Set `makepot: false` to skip translations.
 - For woocommerce: the GlotPress project slug, from the `glotpress-project` input, then `"glotpressProject"` in `package.json`, then `name`.
@@ -279,4 +279,4 @@ This repo must be **public**. If it's private, share it with the other Backcourt
 ## To do
 
 - **Beta translations:** pre-release tags do an additive GlotPress import (see [Translations and beta releases](#translations-and-beta-releases)). Decide whether that is enough, or whether betas need their own GlotPress project.
-- **Gruntfile:** move the shared Grunt build tasks into this repo, so every plugin builds `./deploy/<slug>-<version>.zip` the same way. Then remove the `<slug>.zip` fallback from `build.yml`.
+- **Gruntfile:** move the shared Grunt build tasks into this repo, so every plugin builds its zip the same way (`<slug>.zip` for WooCommerce.com plugins, `<slug>-<version>.zip` for the rest).
