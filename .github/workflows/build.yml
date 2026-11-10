@@ -339,7 +339,7 @@ jobs:
           cat "$notes"
 
       - name: 'Upload release files.'
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.info.outputs.artifact }}
           path: ${{ runner.temp }}/release/
